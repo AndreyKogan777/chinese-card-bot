@@ -1,8 +1,6 @@
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
+GPL_API_KEY = os.environ.get("GPL_API_KEY", "")
+GPL_ACCOUNT_NAME = os.environ.get("GPL_ACCOUNT_NAME", "")
