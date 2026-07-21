@@ -4,10 +4,11 @@ from datetime import date
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from config import BOT_TOKEN
 from services import analyze_business_card
+from payments import create_payment_link, PACKAGE
 from database import (
     init_db,
     get_or_create_user,
@@ -44,6 +45,7 @@ async def cmd_start(message: Message):
         "я распознаю текст и подготовлю аналитический отчёт о надёжности "
         "этой компании и её представителя.\n\n"
         "🎁 Первый запрос каждый день — бесплатно.\n"
+        f"💳 Команда /buy — купить пакет из {PACKAGE['requests']} запросов за {PACKAGE['price_rub']} руб.\n"
         "⏳ Анализ занимает 30-60 секунд."
     )
 
@@ -64,6 +66,42 @@ async def cmd_balance(message: Message):
     )
 
 
+@dp.message(Command("buy"))
+async def cmd_buy(message: Message):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"Купить {PACKAGE['requests']} запросов — {PACKAGE['price_rub']} руб.",
+            callback_data="buy_package"
+        )]
+    ])
+    await message.answer(
+        f"Доступен пакет: {PACKAGE['requests']} запросов за {PACKAGE['price_rub']} руб.",
+        reply_markup=keyboard,
+    )
+
+
+@dp.callback_query(F.data == "buy_package")
+async def process_buy_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    try:
+        payment_url = create_payment_link(user_id)
+    except Exception as e:
+        await callback.message.answer(f"❌ Не удалось создать ссылку на оплату: {e}")
+        await callback.answer()
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатить", url=payment_url)]
+    ])
+    await callback.message.answer(
+        "Нажмите кнопку ниже для оплаты. После успешной оплаты запросы "
+        "будут автоматически зачислены на ваш баланс.",
+        reply_markup=keyboard,
+    )
+    await callback.answer()
+
+
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     user_id = message.from_user.id
@@ -76,8 +114,7 @@ async def handle_photo(message: Message):
     else:
         await message.answer(
             "⚠️ Ваш бесплатный запрос на сегодня уже использован, а платный баланс пуст.\n\n"
-            "Бесплатный лимит обновится завтра. Покупка платных пакетов запросов "
-            "будет доступна в следующей версии бота — совсем скоро!"
+            "Бесплатный лимит обновится завтра, либо купите пакет запросов командой /buy."
         )
         return
 
@@ -116,3 +153,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
