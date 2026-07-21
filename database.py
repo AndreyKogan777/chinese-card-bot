@@ -26,6 +26,16 @@ def init_db():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deal_id TEXT UNIQUE,
+                user_id INTEGER,
+                requests_count INTEGER,
+                status TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 
@@ -111,3 +121,19 @@ def get_user_stats(user_id: int):
             (user_id,),
         )
         return cur.fetchone()
+
+
+def payment_already_processed(deal_id: str) -> bool:
+    with get_connection() as conn:
+        cur = conn.execute("SELECT 1 FROM payments WHERE deal_id = ?", (deal_id,))
+        return cur.fetchone() is not None
+
+
+def save_processed_payment(deal_id: str, user_id: int, requests_count: int, status: str = "success"):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO payments (deal_id, user_id, requests_count, status) VALUES (?, ?, ?, ?)",
+            (deal_id, user_id, requests_count, status),
+        )
+        conn.commit()
+
