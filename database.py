@@ -1,8 +1,10 @@
+import os
+os.makedirs("/app/data", exist_ok=True)
 import sqlite3
 from datetime import date
 from contextlib import contextmanager
 
-DB_PATH = "bot_database.db"
+DB_PATH = "/app/data/bot_database.db"
 
 
 def init_db():
