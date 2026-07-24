@@ -146,11 +146,22 @@ async def handle_text(message: Message):
     await message.answer("Пожалуйста, отправьте фото визитки для анализа.")
 
 
+import threading
+import os
+from webhook_server import app as flask_app
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+
 async def main():
     init_db()
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
     asyncio.run(main())
 
