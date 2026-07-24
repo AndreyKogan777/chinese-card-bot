@@ -5,6 +5,7 @@ from datetime import date
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN
 from services import analyze_business_card
@@ -138,7 +139,10 @@ async def handle_photo(message: Message):
 
     await status_msg.delete()
     for part in split_message(report):
-        await message.answer(part)
+        try:
+            await message.answer(part, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await message.answer(part)
 
 
 @dp.message(F.text)
@@ -164,4 +168,5 @@ async def main():
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     asyncio.run(main())
+
 
