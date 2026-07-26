@@ -128,11 +128,15 @@ button { padding: 8px 16px; border-radius: 6px; border: none; background: #7aa2f
 def admin_login():
     error = ""
     if request.method == "POST":
-        password = request.form.get("password", "")
-        if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
+        password = request.form.get("password", "").strip()
+        expected = (ADMIN_PASSWORD or "").strip()
+        if expected and password == expected:
             session["logged_in"] = True
             return redirect("/admin")
-        error = "<p style='color:#ff7a7a'>Неверный пароль</p>"
+        if not expected:
+            error = "<p style='color:#ff7a7a'>ADMIN_PASSWORD не задан на сервере</p>"
+        else:
+            error = f"<p style='color:#ff7a7a'>Неверный пароль (введено символов: {len(password)}, ожидается: {len(expected)})</p>"
     return Response(f"""
     <html><head>{PAGE_STYLE}</head><body>
     <h1>Вход в админ-панель</h1>
