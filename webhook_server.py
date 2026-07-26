@@ -88,7 +88,7 @@ def gpl_webhook():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "OK", 200
+    return "OK v2", 200
 
 
 def login_required(f):
