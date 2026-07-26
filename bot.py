@@ -203,9 +203,9 @@ async def handle_photo(message: Message):
         return
 
     if request_type == "free":
-        consume_free_request(user_id)
+        consume_free_request(user_id, report_text=report)
     else:
-        consume_paid_request(user_id)
+        consume_paid_request(user_id, report_text=report)
 
     await status_msg.delete()
     for part in split_message(report):
