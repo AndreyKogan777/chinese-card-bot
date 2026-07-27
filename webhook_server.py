@@ -16,7 +16,9 @@ from database import (
     admin_get_users,
     admin_get_requests,
     admin_get_request_by_id,
+    admin_get_all_user_ids,
 )
+from messaging import send_message_sync, broadcast_sync
 
 app = Flask(__name__)
 app.secret_key = ADMIN_PASSWORD or "change-me-secret-key"
@@ -169,6 +171,7 @@ def admin_dashboard():
         <a href="/admin">Обзор</a>
         <a href="/admin/users">Пользователи</a>
         <a href="/admin/requests">Все запросы</a>
+        <a href="/admin/message">Написать пользователю</a>
         <a href="/admin/logout">Выйти</a>
     </nav>
     <h1>Обзор</h1>
@@ -201,7 +204,7 @@ def admin_users():
         rows += (
             f"<tr><td>{user_id}</td><td>{uname}</td><td>{full_name or '-'}</td>"
             f"<td>{paid_balance}</td><td>{total_requests}</td><td>{registered_at}</td>"
-            f"<td><a href='/admin/requests?user_id={user_id}'>Запросы</a></td></tr>"
+            f"<td><a href='/admin/requests?user_id={user_id}'>Запросы</a> | <a href='/admin/message?user_id={user_id}'>Написать</a></td></tr>"
         )
     return Response(f"""
     <html><head>{PAGE_STYLE}</head><body>
@@ -209,6 +212,7 @@ def admin_users():
         <a href="/admin">Обзор</a>
         <a href="/admin/users">Пользователи</a>
         <a href="/admin/requests">Все запросы</a>
+        <a href="/admin/message">Написать пользователю</a>
         <a href="/admin/logout">Выйти</a>
     </nav>
     <h1>Пользователи</h1>
@@ -250,6 +254,7 @@ def admin_requests():
         <a href="/admin">Обзор</a>
         <a href="/admin/users">Пользователи</a>
         <a href="/admin/requests">Все запросы</a>
+        <a href="/admin/message">Написать пользователю</a>
         <a href="/admin/logout">Выйти</a>
     </nav>
     <h1>{title}</h1>
@@ -275,6 +280,7 @@ def admin_report(request_id):
         <a href="/admin">Обзор</a>
         <a href="/admin/users">Пользователи</a>
         <a href="/admin/requests">Все запросы</a>
+        <a href="/admin/message">Написать пользователю</a>
         <a href="/admin/logout">Выйти</a>
     </nav>
     <h1>Отчёт #{rid}</h1>
@@ -282,6 +288,68 @@ def admin_report(request_id):
     <p>Тип запроса: {req_type}</p>
     <p>Дата: {created_at}</p>
     <div class="report-box">{report_text or '(текст отчёта отсутствует)'}</div>
+    </body></html>
+    """)
+
+
+@app.route("/admin/message", methods=["GET", "POST"])
+@login_required
+def admin_message():
+    result_html = ""
+    prefill_user_id = request.args.get("user_id", "")
+
+    if request.method == "POST":
+        mode = request.form.get("mode")
+        text = request.form.get("text", "").strip()
+
+        if not text:
+            result_html = "<p style='color:#ff7a7a'>Текст сообщения не может быть пустым</p>"
+        elif mode == "single":
+            target_id = request.form.get("user_id", "").strip()
+            if not target_id.isdigit():
+                result_html = "<p style='color:#ff7a7a'>Некорректный ID пользователя</p>"
+            else:
+                ok, err = send_message_sync(int(target_id), text)
+                if ok:
+                    result_html = f"<p style='color:#7dffb0'>Сообщение успешно отправлено пользователю {target_id}</p>"
+                else:
+                    result_html = f"<p style='color:#ff7a7a'>Ошибка отправки: {err}</p>"
+        elif mode == "broadcast":
+            user_ids = admin_get_all_user_ids()
+            stats = broadcast_sync(user_ids, text)
+            errors_html = "<br>".join(stats["errors"]) if stats["errors"] else ""
+            result_html = (
+                f"<p style='color:#7dffb0'>Рассылка завершена. Отправлено: {stats['sent']}, "
+                f"не доставлено: {stats['failed']}</p>"
+                f"<p style='color:#ff7a7a; font-size:12px'>{errors_html}</p>"
+            )
+
+    return Response(f"""
+    <html><head>{PAGE_STYLE}</head><body>
+    <nav>
+        <a href="/admin">Обзор</a>
+        <a href="/admin/users">Пользователи</a>
+        <a href="/admin/requests">Все запросы</a>
+        <a href="/admin/message">Написать пользователю</a>
+        <a href="/admin/logout">Выйти</a>
+    </nav>
+    <h1>Написать пользователю от имени бота</h1>
+    {result_html}
+
+    <h2>Сообщение одному пользователю</h2>
+    <form method="post">
+        <input type="hidden" name="mode" value="single">
+        <p><input type="text" name="user_id" placeholder="ID пользователя" value="{prefill_user_id}" required></p>
+        <p><textarea name="text" rows="6" cols="60" placeholder="Текст сообщения" style="padding:8px; border-radius:6px; border:1px solid #2a2e45; background:#171a2b; color:#fff;" required></textarea></p>
+        <button type="submit">Отправить</button>
+    </form>
+
+    <h2>Рассылка всем пользователям</h2>
+    <form method="post" onsubmit="return confirm('Отправить это сообщение ВСЕМ пользователям бота?');">
+        <input type="hidden" name="mode" value="broadcast">
+        <p><textarea name="text" rows="6" cols="60" placeholder="Текст сообщения для рассылки" style="padding:8px; border-radius:6px; border:1px solid #2a2e45; background:#171a2b; color:#fff;" required></textarea></p>
+        <button type="submit">Разослать всем</button>
+    </form>
     </body></html>
     """)
 
