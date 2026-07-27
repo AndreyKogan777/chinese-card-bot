@@ -252,6 +252,12 @@ def admin_get_requests(limit: int = 200, user_id: int = None):
         return rows
 
 
+def admin_get_all_user_ids():
+    with get_connection() as conn:
+        rows = conn.execute("SELECT user_id FROM users").fetchall()
+        return [row[0] for row in rows]
+
+
 def admin_get_request_by_id(request_id: int):
     with get_connection() as conn:
         row = conn.execute(
