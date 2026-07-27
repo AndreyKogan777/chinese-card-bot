@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import date
 
 from aiogram import Bot, Dispatcher, F
@@ -45,6 +46,13 @@ main_menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
     is_persistent=True,
 )
+
+
+def strip_citation_markers(text: str) -> str:
+    text = re.sub(r'\[\d{1,3}(?:,\s*\d{1,3})*\]', '', text)
+    text = re.sub(r'(?<=[\.\!\?\)»"”:;,])\d{1,3}(?=[\s\n]|$)', '', text)
+    text = re.sub(r'(?<=[а-яА-Яa-zA-Z])\d{1,3}(?=[\.\!\?,:;])', '', text)
+    return text
 
 
 def split_message(text: str, limit: int = 4000):
@@ -198,6 +206,7 @@ async def handle_photo(message: Message):
 
     try:
         report = analyze_business_card(image_bytes)
+        report = strip_citation_markers(report)
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка при анализе визитки: {e}")
         return
