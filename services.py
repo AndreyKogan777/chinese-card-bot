@@ -50,7 +50,8 @@ def analyze_card_data(card_data: str) -> str:
             }
         ],
         "max_tokens": 5000,
-        "temperature": 0.2,
+        "temperature": 0.0,
+        "top_p": 0.1,
     }
     return _call_perplexity(payload)
 
@@ -58,4 +59,3 @@ def analyze_card_data(card_data: str) -> str:
 def analyze_business_card(image_bytes: bytes) -> str:
     card_data = recognize_business_card(image_bytes)
     return analyze_card_data(card_data)
-
