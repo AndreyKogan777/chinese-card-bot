@@ -28,6 +28,7 @@ from database import (
     consume_paid_request,
     get_user_stats,
 )
+from messaging import register_bot
 
 logging.basicConfig(level=logging.INFO)
 
@@ -258,6 +259,7 @@ async def set_bot_commands():
 
 async def main():
     init_db()
+    register_bot(bot, asyncio.get_running_loop())
     await set_bot_commands()
     await dp.start_polling(bot)
 
