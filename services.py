@@ -24,6 +24,8 @@ from prompts.probe_prompts import (
 
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 PROBE_TIMEOUT = 120  # секунд на один probe
+PROBE_CONCURRENCY = 2  # сколько probe-ов одновременно (Perplexity plan бьёт на конкурентности)
+PROBE_MAX_RETRIES = 3  # повторы при 429/5xx с backoffом
 WEBSITE_FETCH_TIMEOUT = 20  # секунд на fetch сайта
 
 logger = logging.getLogger(__name__)
@@ -105,23 +107,59 @@ def _normalize_json_output(raw: str) -> str:
 # ============================================================
 
 async def _call_perplexity_async(session: aiohttp.ClientSession, payload: dict) -> str:
+    """
+    Вызов Perplexity API с повторами при 429/5xx.
+    Подробно логирует ошибку (статус + начало тела), чтобы в следующий раз
+    было видно первопричину (лимит, ключ, timeout).
+    """
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
         "Content-Type": "application/json",
     }
-    async with session.post(
-        PERPLEXITY_URL,
-        headers=headers,
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=PROBE_TIMEOUT),
-    ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-        return data["choices"][0]["message"]["content"]
+    last_exc = None
+    for attempt in range(1, PROBE_MAX_RETRIES + 1):
+        try:
+            async with session.post(
+                PERPLEXITY_URL,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=PROBE_TIMEOUT),
+            ) as resp:
+                if resp.status >= 400:
+                    body = (await resp.text())[:500]
+                    logger.warning(
+                        "Perplexity API %s on attempt %d/%d, body: %s",
+                        resp.status, attempt, PROBE_MAX_RETRIES, body,
+                    )
+                    # 429 и 5xx — повторяем с backoffом; 4xx (кроме 429) — не повторяем
+                    if resp.status == 429 or resp.status >= 500:
+                        if attempt < PROBE_MAX_RETRIES:
+                            backoff = 2 ** attempt + (attempt * 0.5)  # 2.5, 4.5, ...
+                            await asyncio.sleep(backoff)
+                            continue
+                    resp.raise_for_status()
+                data = await resp.json()
+                return data["choices"][0]["message"]["content"]
+        except (aiohttp.ClientResponseError, aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+            last_exc = e
+            if attempt < PROBE_MAX_RETRIES:
+                backoff = 2 ** attempt
+                logger.warning(
+                    "Perplexity transport error %s on attempt %d/%d, retry in %.1fs",
+                    type(e).__name__, attempt, PROBE_MAX_RETRIES, backoff,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            raise
+    # сюда не должны дойти, но на всякий случай
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Perplexity call failed without exception")
 
 
 async def _run_probe(
     session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
     topic: str,
     prompt: str,
     identification_json: str,
@@ -137,7 +175,8 @@ async def _run_probe(
         "top_p": 0.1,
     }
     try:
-        raw = await _call_perplexity_async(session, payload)
+        async with semaphore:
+            raw = await _call_perplexity_async(session, payload)
         normalized = _normalize_json_output(raw)
         try:
             parsed = json.loads(normalized)
@@ -156,7 +195,10 @@ async def _run_probe(
 
 
 async def _fetch_website_text(url: str) -> Optional[str]:
-    """Забирает текст официального сайта. Возвращает None при неудаче."""
+    """Забирает текст официального сайта С ВИЗИТКИ. Возвращает None при неудаче.
+
+    НИКОГДА не пытается подменить сайт визитки чем-то найденным в поиске.
+    """
     if not url:
         return None
     if not url.startswith(("http://", "https://")):
@@ -186,24 +228,29 @@ async def _fetch_website_text(url: str) -> Optional[str]:
 
 
 def _extract_website_url(identification_json: str, card_data: str) -> Optional[str]:
-    """Достаём URL сайта: сначала из identification, потом из card_data."""
-    # Из идентификации — иногда модель кладёт в sources
-    try:
-        parsed = json.loads(identification_json)
-        for cand in parsed.get("candidates", []):
-            for src in cand.get("sources", []):
-                if isinstance(src, str) and re.match(r"^https?://", src):
-                    # исключаем крупные реестры и B2B
-                    domain = src.split("/")[2].lower() if "/" in src[8:] else ""
-                    if not any(x in domain for x in ["qcc.com", "qichacha", "tianyancha", "gsxt", "alibaba", "made-in-china", "1688", "baidu"]):
-                        return src
-    except Exception:
-        pass
-    # Из card_data — ищем строку "Сайт: ..." или голый URL
+    """
+    Достаём URL официального сайта СТРОГО из визитки.
+
+    Важно: нельзя брать сайт из результатов поиска (candidate.sources) — там
+    легко попадается домен другого юрлица с похожим именем (напр.,
+    zjzhongtian.com вместо aab.com для визитки с aab.com). Сайт с визитки —
+    единственный источник, где сама компания явно указала свой официальный домен.
+    """
+    # 1) Сначала — явная строка "Сайт:/Website:/网站:" в card_data
     m = re.search(r"(?:Сайт|Website|网站)[^\S\n]*[:：]?\s*(https?://\S+|www\.\S+|[a-z0-9-]+\.[a-z]{2,}(?:/\S*)?)", card_data, re.IGNORECASE)
     if m:
         url = m.group(1).strip().rstrip(".,;:)")
         return url
+
+    # 2) Голый URL в card_data (иногда визитка не содержит явного префикса)
+    m = re.search(r"(?<![@\w])(www\.[a-z0-9-]+\.[a-z]{2,}(?:/\S*)?|https?://[a-z0-9-]+\.[a-z]{2,}(?:/\S*)?)", card_data, re.IGNORECASE)
+    if m:
+        url = m.group(1).strip().rstrip(".,;:)")
+        # исключаем очевидные не-сайты
+        low = url.lower()
+        if not any(x in low for x in ["wechat", "weixin", "qq.com", "linkedin.com", "whatsapp"]):
+            return url
+
     return None
 
 
@@ -216,12 +263,15 @@ async def _run_all_probes(identification_json: str, card_data: str) -> str:
     logger.info("website url for probes: %s", website_url)
 
     async with aiohttp.ClientSession() as session:
+        # Семафор ограничивает конкурентность вызовов Perplexity API,
+        # чтобы не нарываться на 429 rate-limit.
+        semaphore = asyncio.Semaphore(PROBE_CONCURRENCY)
         probe_tasks = [
-            _run_probe(session, "legal_registry", LEGAL_REGISTRY_PROMPT, identification_json),
-            _run_probe(session, "court_and_credit", COURT_AND_CREDIT_PROMPT, identification_json),
-            _run_probe(session, "export_and_customs", EXPORT_AND_CUSTOMS_PROMPT, identification_json),
-            _run_probe(session, "b2b_and_marketplaces", B2B_MARKETPLACES_PROMPT, identification_json),
-            _run_probe(session, "contact_person", CONTACT_PERSON_PROMPT, identification_json),
+            _run_probe(session, semaphore, "legal_registry", LEGAL_REGISTRY_PROMPT, identification_json),
+            _run_probe(session, semaphore, "court_and_credit", COURT_AND_CREDIT_PROMPT, identification_json),
+            _run_probe(session, semaphore, "export_and_customs", EXPORT_AND_CUSTOMS_PROMPT, identification_json),
+            _run_probe(session, semaphore, "b2b_and_marketplaces", B2B_MARKETPLACES_PROMPT, identification_json),
+            _run_probe(session, semaphore, "contact_person", CONTACT_PERSON_PROMPT, identification_json),
         ]
         website_task = _fetch_website_text(website_url) if website_url else None
         if website_task:
@@ -245,7 +295,8 @@ async def _run_all_probes(identification_json: str, card_data: str) -> str:
                 "top_p": 0.1,
             }
             try:
-                raw = await _call_perplexity_async(session, payload)
+                async with semaphore:
+                    raw = await _call_perplexity_async(session, payload)
                 normalized = _normalize_json_output(raw)
                 website_result = json.loads(normalized)
                 if "topic" not in website_result:
