@@ -207,7 +207,11 @@ async def handle_photo(message: Message):
     image_bytes = file_bytes_io.read()
 
     try:
-        report = analyze_business_card(image_bytes)
+        # analyze_business_card — блокирующий (recognize + identify + параллельные probes + synthesize).
+        # Запускаем его в треде, чтобы:
+        # 1) не блокировать event loop aiogram (бот продолжает отвечать другим пользователям);
+        # 2) asyncio.run() внутри пайплайна мог запуститься без RuntimeError про running event loop.
+        report = await asyncio.to_thread(analyze_business_card, image_bytes)
         report = strip_citation_markers(report)
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка при анализе визитки: {e}")

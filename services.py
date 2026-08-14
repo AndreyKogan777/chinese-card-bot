@@ -271,8 +271,40 @@ async def _run_all_probes(identification_json: str, card_data: str) -> str:
 
 
 def gather_probes(identification_json: str, card_data: str) -> str:
-    """Sync-обёртка над асинхронным сбором probes."""
-    return asyncio.run(_run_all_probes(identification_json, card_data))
+    """
+    Sync-обёртка над асинхронным сбором probes.
+
+    Важно: эта функция может быть вызвана из контекста, где уже есть работающий
+    asyncio event loop (например, если когда-либо будет вызвана напрямую из aiogram-handler-а).
+    asyncio.run() в этом случае бросает RuntimeError. Поэтому перед вызовом
+    проверяем, есть ли работающий loop:
+    - нет — обычный asyncio.run
+    - есть — запускаем корутину в отдельном потоке со своим чистым loop’ом.
+    """
+    try:
+        asyncio.get_running_loop()
+        # Есть активный loop — запускаем в отдельном потоке
+        import threading
+        result_container = {}
+        error_container = {}
+
+        def runner():
+            try:
+                result_container["value"] = asyncio.run(
+                    _run_all_probes(identification_json, card_data)
+                )
+            except BaseException as e:
+                error_container["error"] = e
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join()
+        if "error" in error_container:
+            raise error_container["error"]
+        return result_container["value"]
+    except RuntimeError:
+        # Нет активного loop’а — обычный путь
+        return asyncio.run(_run_all_probes(identification_json, card_data))
 
 
 # ============================================================
