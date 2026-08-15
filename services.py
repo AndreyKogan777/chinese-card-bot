@@ -20,6 +20,7 @@ from prompts.probe_prompts import (
     B2B_MARKETPLACES_PROMPT,
     CONTACT_PERSON_PROMPT,
     WEBSITE_PROMPT,
+    WEBSITE_SEARCH_PROMPT,
 )
 
 PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
@@ -280,7 +281,13 @@ async def _run_all_probes(identification_json: str, card_data: str) -> str:
             probe_results = await asyncio.gather(*probe_tasks)
             website_html = None
 
-        # Website probe — отдельно, потому что prompt другой
+        # Website probe — отдельно, потому что prompt другой.
+        # Стратегия:
+        # 1) Если прямой fetch HTML сработал и вернул текст — кормим LLM этим текстом (WEBSITE_PROMPT).
+        # 2) Если fetch не вернул HTML (китайские сайты часто недоступны снаружи КНР
+        #    или отдают SPA), но URL есть — fallback на web-поиск Perplexity с site: оператором.
+        # 3) Если и fallback не дал фактов — вкладываем пустой probe с notes-причиной.
+        website_result = None
         if website_html:
             website_prompt_filled = WEBSITE_PROMPT.replace(
                 "{identification}", identification_json
@@ -301,21 +308,50 @@ async def _run_all_probes(identification_json: str, card_data: str) -> str:
                 website_result = json.loads(normalized)
                 if "topic" not in website_result:
                     website_result["topic"] = "company_website"
-                probe_results = list(probe_results) + [website_result]
             except Exception as e:
-                logger.warning("website probe failed: %s", type(e).__name__)
-                probe_results = list(probe_results) + [{
-                    "topic": "company_website",
-                    "website_url": website_url,
-                    "facts": [],
-                    "notes": f"сайт открылся, но синтез из его содержимого не удался: {type(e).__name__}",
-                }]
+                logger.warning("website extract from HTML failed: %s", type(e).__name__)
+                website_result = None
+
+        # Fallback: web-поиск по site:{domain}, если прямой fetch не дал facts
+        need_search_fallback = website_url and (
+            website_result is None or not website_result.get("facts")
+        )
+        if need_search_fallback:
+            search_prompt_filled = (
+                WEBSITE_SEARCH_PROMPT
+                .replace("{identification}", identification_json)
+                .replace("{website_url}", website_url)
+            )
+            payload = {
+                "model": "sonar-pro",
+                "messages": [{"role": "user", "content": search_prompt_filled}],
+                "max_tokens": 2500,
+                "temperature": 0.0,
+                "top_p": 0.1,
+            }
+            try:
+                async with semaphore:
+                    raw = await _call_perplexity_async(session, payload)
+                normalized = _normalize_json_output(raw)
+                search_result = json.loads(normalized)
+                if "topic" not in search_result:
+                    search_result["topic"] = "company_website"
+                # Если search нашёл facts — используем его; иначе оставляем что было (пустое).
+                if search_result.get("facts"):
+                    website_result = search_result
+                elif website_result is None:
+                    website_result = search_result
+            except Exception as e:
+                logger.warning("website search fallback failed: %s", type(e).__name__)
+
+        if website_result is not None:
+            probe_results = list(probe_results) + [website_result]
         elif website_url:
             probe_results = list(probe_results) + [{
                 "topic": "company_website",
                 "website_url": website_url,
                 "facts": [],
-                "notes": "сайт указан на визитке, но не открылся или пустой",
+                "notes": "сайт указан на визитке, но ни прямой fetch, ни web-поиск не дали содержательных данных (сайт может быть недоступен снаружи Китая)",
             }]
 
     return json.dumps(list(probe_results), ensure_ascii=False, indent=2)
